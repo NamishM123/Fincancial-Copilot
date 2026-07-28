@@ -1,0 +1,198 @@
+/**
+ * Labeled merchant corpus for the transaction categoriser.
+ *
+ * IMPORTANT, and stated here so no accuracy number derived from this file gets
+ * over-read: these are hand-authored merchant names, not sampled from real bank
+ * exports. Accuracy measured against this corpus says the model generalises
+ * across *merchant names*; it does not say how it performs on one person's
+ * actual statement. Replacing this with real labeled data is the single
+ * highest-value improvement available to the classifier.
+ *
+ * Each entry is one base merchant. The eval splits on these entries, so a
+ * merchant that appears in training never appears in test -- see
+ * test/categorize.test.js for why that matters.
+ */
+
+const DATASET = {
+    Food: [
+        'SAFEWAY', 'KROGER', 'TRADER JOES', 'WHOLE FOODS MARKET', 'ALDI', 'PUBLIX',
+        'WEGMANS', 'H-E-B', 'SPROUTS FARMERS MARKET', 'FOOD LION', 'GIANT EAGLE',
+        'STOP & SHOP', 'WINCO FOODS', 'HARRIS TEETER', 'MEIJER GROCERY',
+        'STARBUCKS', 'BLUE BOTTLE COFFEE', 'PEETS COFFEE', 'DUNKIN', 'CARIBOU COFFEE',
+        'CHIPOTLE MEXICAN GRILL', 'PANERA BREAD', 'SWEETGREEN', 'SHAKE SHACK',
+        'MCDONALDS', 'BURGER KING', 'WENDYS', 'TACO BELL', 'SUBWAY SANDWICHES',
+        'DOMINOS PIZZA', 'PIZZA HUT', 'PAPA JOHNS', 'FIVE GUYS', 'IN-N-OUT BURGER',
+        'DOORDASH', 'UBER EATS', 'GRUBHUB', 'POSTMATES', 'SEAMLESS',
+        'OLIVE GARDEN', 'CHEESECAKE FACTORY', 'RED LOBSTER', 'APPLEBEES',
+        'THE CORNER BISTRO', 'RAMEN HOUSE', 'TAQUERIA EL SOL', 'SUSHI PALACE',
+        'BAKERY ON MAIN', 'DELI EXPRESS', 'JUICE BAR CO',
+    ],
+
+    Transportation: [
+        'UBER TRIP', 'LYFT RIDE', 'SHELL OIL', 'CHEVRON', 'EXXONMOBIL', 'BP FUEL',
+        'MARATHON PETROLEUM', 'CIRCLE K FUEL', 'SPEEDWAY', 'ARCO AMPM', 'SUNOCO',
+        'VALERO', 'TEXACO', 'QUIKTRIP', 'WAWA FUEL',
+        'MTA SUBWAY', 'BART CLIPPER', 'CTA VENTRA', 'WMATA METRO', 'SEPTA TRANSIT',
+        'AMTRAK', 'GREYHOUND LINES', 'MEGABUS',
+        'DELTA AIR LINES', 'UNITED AIRLINES', 'SOUTHWEST AIRLINES', 'AMERICAN AIRLINES',
+        'JETBLUE AIRWAYS', 'ALASKA AIRLINES',
+        'PARKING METER', 'SP PLUS PARKING', 'LAZ PARKING', 'IMPARK',
+        'HERTZ RENT A CAR', 'ENTERPRISE RENT-A-CAR', 'AVIS CAR RENTAL',
+        'JIFFY LUBE', 'DISCOUNT TIRE', 'AUTOZONE PARTS', 'OREILLY AUTO PARTS',
+        'EZPASS TOLLS', 'FASTRAK TOLL',
+    ],
+
+    Entertainment: [
+        'NETFLIX.COM', 'SPOTIFY USA', 'HULU', 'DISNEY PLUS', 'HBO MAX', 'PARAMOUNT PLUS',
+        'PEACOCK PREMIUM', 'APPLE TV PLUS', 'YOUTUBE PREMIUM', 'AUDIBLE',
+        'AMC THEATRES', 'REGAL CINEMAS', 'CINEMARK', 'ALAMO DRAFTHOUSE',
+        'STEAM GAMES', 'PLAYSTATION NETWORK', 'XBOX GAME PASS', 'NINTENDO ESHOP',
+        'EPIC GAMES STORE', 'TWITCH SUBSCRIPTION',
+        'TICKETMASTER', 'STUBHUB', 'EVENTBRITE', 'LIVE NATION',
+        'DAVE & BUSTERS', 'TOPGOLF', 'BOWLING ALLEY', 'ESCAPE ROOM CO',
+        'MUSEUM OF MODERN ART', 'AQUARIUM ADMISSION', 'ZOO TICKETS',
+        'CONCERT VENUE LLC', 'COMEDY CLUB', 'PATREON MEMBERSHIP',
+    ],
+
+    Utilities: [
+        'PACIFIC GAS & ELECTRIC', 'CON EDISON', 'DUKE ENERGY', 'SOUTHERN CALIF EDISON',
+        'DOMINION ENERGY', 'NATIONAL GRID', 'XCEL ENERGY', 'GEORGIA POWER',
+        'FLORIDA POWER LIGHT', 'AMEREN UTILITY',
+        'CITY WATER DEPT', 'MUNICIPAL SEWER', 'WASTE MANAGEMENT', 'REPUBLIC SERVICES',
+        'COMCAST XFINITY', 'SPECTRUM CABLE', 'COX COMMUNICATIONS', 'FRONTIER INTERNET',
+        'CENTURYLINK', 'GOOGLE FIBER',
+        'VERIZON WIRELESS', 'AT&T MOBILITY', 'T-MOBILE', 'MINT MOBILE', 'CRICKET WIRELESS',
+        'RENT PAYMENT', 'PROPERTY MANAGEMENT LLC', 'HOA DUES',
+        'ICLOUD STORAGE', 'DROPBOX PLUS', 'GOOGLE ONE STORAGE',
+        'STATE FARM INSURANCE', 'GEICO AUTO', 'PROGRESSIVE INSURANCE', 'ALLSTATE',
+    ],
+
+    Shopping: [
+        'AMAZON MKTP', 'AMAZON.COM', 'TARGET', 'WALMART', 'COSTCO WHOLESALE',
+        'BEST BUY', 'HOME DEPOT', 'LOWES', 'IKEA', 'WAYFAIR',
+        'EBAY', 'ETSY', 'ALIEXPRESS', 'TEMU', 'SHEIN',
+        'NIKE STORE', 'ADIDAS', 'LULULEMON', 'UNIQLO', 'H&M', 'ZARA', 'GAP',
+        'OLD NAVY', 'NORDSTROM', 'MACYS', 'KOHLS', 'TJ MAXX', 'MARSHALLS', 'ROSS STORES',
+        'SEPHORA', 'ULTA BEAUTY', 'BATH & BODY WORKS',
+        'APPLE STORE', 'MICRO CENTER', 'NEWEGG', 'B&H PHOTO',
+        'PETCO', 'PETSMART', 'DICKS SPORTING GOODS', 'REI CO-OP',
+    ],
+
+    Healthcare: [
+        'CVS PHARMACY', 'WALGREENS', 'RITE AID', 'DUANE READE',
+        'QUEST DIAGNOSTICS', 'LABCORP', 'ONE MEDICAL', 'ZOCDOC VISIT',
+        'FAMILY DENTAL CARE', 'ORTHODONTIC ASSOCIATES', 'VISION CENTER OPTOMETRY',
+        'LENSCRAFTERS', 'WARBY PARKER EXAM',
+        'GENERAL HOSPITAL', 'URGENT CARE CLINIC', 'EMERGENCY PHYSICIANS',
+        'RADIOLOGY ASSOCIATES', 'DERMATOLOGY GROUP', 'PEDIATRIC CLINIC',
+        'BLUE CROSS BLUE SHIELD', 'UNITEDHEALTHCARE', 'AETNA PREMIUM', 'CIGNA HEALTH',
+        'KAISER PERMANENTE', 'HUMANA',
+        'PLANET FITNESS', 'LA FITNESS', 'EQUINOX', 'ORANGETHEORY FITNESS',
+        'CLASSPASS', 'PELOTON MEMBERSHIP', 'YOGA STUDIO',
+        'THERAPY ASSOCIATES', 'BETTERHELP',
+    ],
+
+    Education: [
+        'STATE UNIVERSITY TUITION', 'COMMUNITY COLLEGE', 'UNIVERSITY BOOKSTORE',
+        'CAMPUS HOUSING', 'STUDENT REGISTRAR FEE',
+        'COURSERA', 'UDEMY', 'EDX COURSE', 'PLURALSIGHT', 'DATACAMP', 'CODECADEMY',
+        'MASTERCLASS', 'SKILLSHARE', 'BRILLIANT.ORG', 'DUOLINGO PLUS',
+        'CHEGG STUDY', 'KHAN ACADEMY DONATION', 'LEETCODE PREMIUM',
+        'BARNES & NOBLE', 'BOOKSHOP.ORG', 'AUDIOBOOK STORE', 'TEXTBOOK RENTAL',
+        'KAPLAN TEST PREP', 'PRINCETON REVIEW', 'ETS GRE FEE', 'COLLEGE BOARD',
+        'TUTORING SERVICES', 'DRIVING SCHOOL', 'LANGUAGE INSTITUTE',
+    ],
+
+    Other: [
+        'ATM WITHDRAWAL', 'CASH WITHDRAWAL', 'OVERDRAFT FEE', 'MONTHLY SERVICE FEE',
+        'WIRE TRANSFER FEE', 'FOREIGN TRANSACTION FEE', 'LATE PAYMENT FEE',
+        'VENMO PAYMENT', 'CASH APP SENT', 'ZELLE TRANSFER', 'PAYPAL TRANSFER',
+        'CHECK 1042', 'MONEY ORDER',
+        'RED CROSS DONATION', 'GOFUNDME', 'CHARITY DONATION', 'UNICEF GIVING',
+        'IRS TAX PAYMENT', 'STATE TAX PAYMENT', 'DMV REGISTRATION', 'PASSPORT FEE',
+        'POST OFFICE', 'UPS STORE', 'FEDEX OFFICE', 'NOTARY SERVICE',
+        'STORAGE UNIT RENTAL', 'LEGAL SERVICES', 'ACCOUNTANT FEE',
+    ],
+
+    Salary: [
+        'ACME CORP PAYROLL', 'DIRECT DEPOSIT PAYROLL', 'PAYCHEX DIRECT DEP',
+        'ADP PAYROLL', 'GUSTO PAYROLL', 'WORKDAY PAYROLL', 'TRINET PAYROLL',
+        'BIWEEKLY PAYCHECK', 'SEMI-MONTHLY SALARY', 'EMPLOYER DIRECT DEPOSIT',
+        'SALARY DEPOSIT', 'WAGES PAID', 'NET PAY DEPOSIT', 'BONUS PAYMENT',
+        'COMMISSION PAYOUT', 'OVERTIME PAY', 'SEVERANCE PAYMENT',
+        'PAYROLL DD ACME', 'HR PAYROLL CREDIT',
+    ],
+
+    Freelance: [
+        'UPWORK PAYOUT', 'FIVERR EARNINGS', 'TOPTAL PAYMENT', 'FREELANCER.COM',
+        'CLIENT INVOICE PAYMENT', 'INVOICE 2041 PAID', 'CONSULTING FEE RECEIVED',
+        'CONTRACT WORK PAYMENT', 'STRIPE PAYOUT', 'SQUARE PAYOUT',
+        'PAYPAL INVOICE RECEIVED', 'GUMROAD PAYOUT', 'SUBSTACK PAYOUT',
+        'PATREON CREATOR PAYOUT', 'YOUTUBE ADSENSE', 'GOOGLE ADSENSE PAYMENT',
+        'ETSY SELLER DEPOSIT', 'SHOPIFY PAYOUT', 'RETAINER PAYMENT',
+    ],
+
+    Investments: [
+        'VANGUARD DIVIDEND', 'FIDELITY DIVIDEND', 'CHARLES SCHWAB INTEREST',
+        'ROBINHOOD DIVIDEND', 'E*TRADE DIVIDEND', 'TD AMERITRADE', 'MERRILL LYNCH',
+        'INTEREST EARNED', 'SAVINGS INTEREST', 'CD MATURITY INTEREST',
+        'TREASURY DIRECT INTEREST', 'BOND COUPON PAYMENT', 'MUTUAL FUND DISTRIBUTION',
+        'CAPITAL GAINS DISTRIBUTION', 'STOCK SALE PROCEEDS', 'ETF DIVIDEND',
+        'CRYPTO STAKING REWARD', 'COINBASE EARN', 'REIT DISTRIBUTION',
+        '401K EMPLOYER MATCH', 'BROKERAGE INTEREST',
+    ],
+
+    'Other Income': [
+        'TAX REFUND', 'IRS TREAS 310 REFUND', 'STATE TAX REFUND',
+        'INSURANCE CLAIM PAYOUT', 'RENTAL INCOME RECEIVED', 'SECURITY DEPOSIT RETURN',
+        'REBATE CREDIT', 'CASHBACK REWARD', 'CREDIT CARD REWARD REDEMPTION',
+        'REIMBURSEMENT RECEIVED', 'EXPENSE REIMBURSEMENT', 'REFUND FROM MERCHANT',
+        'VENMO RECEIVED', 'ZELLE RECEIVED', 'CASH APP RECEIVED', 'GIFT RECEIVED',
+        'LOTTERY WINNINGS', 'CLASS ACTION SETTLEMENT', 'UNEMPLOYMENT BENEFIT',
+        'SOCIAL SECURITY DEPOSIT',
+    ],
+};
+
+const INCOME_CATEGORIES = ['Salary', 'Freelance', 'Investments', 'Other Income'];
+const EXPENSE_CATEGORIES = Object.keys(DATASET).filter((c) => !INCOME_CATEGORIES.includes(c));
+
+/** Flattens the corpus into { merchant, category, type } rows. */
+function labeledExamples() {
+    const rows = [];
+    for (const [category, merchants] of Object.entries(DATASET)) {
+        const type = INCOME_CATEGORIES.includes(category) ? 'income' : 'expense';
+        for (const merchant of merchants) {
+            rows.push({ merchant, category, type });
+        }
+    }
+    return rows;
+}
+
+/**
+ * Bank statements rarely contain a bare merchant name. These are the wrappers
+ * real exports add: payment-processor prefixes, store numbers, city/state tags,
+ * and card suffixes.
+ *
+ * Used to test preprocessing robustness -- NOT to enlarge the training set,
+ * which would just teach the model this generator.
+ */
+const NOISE_PATTERNS = [
+    (m) => `SQ *${m}`,
+    (m) => `TST* ${m}`,
+    (m) => `${m} #${1000 + (m.length * 37) % 8999}`,
+    (m) => `POS DEBIT ${m}`,
+    (m) => `${m} SAN FRANCISCO CA`,
+    (m) => `${m} 03/14`,
+    (m) => `PURCHASE AUTHORIZED ON 03/14 ${m}`,
+    (m) => `${m} XXXXXX4412`,
+    (m) => `RECUR PMT ${m}`,
+    (m) => `${m.toLowerCase()}`,
+];
+
+module.exports = {
+    DATASET,
+    INCOME_CATEGORIES,
+    EXPENSE_CATEGORIES,
+    labeledExamples,
+    NOISE_PATTERNS,
+};

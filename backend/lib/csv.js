@@ -245,14 +245,17 @@ function parseTransactionsCsv(text, { maxRows = 5000 } = {}) {
             return;
         }
 
-        const category = cell(columns.category) || guessCategory(description, type);
+        // A category column in the file is the user's own labelling and wins.
+        // Otherwise the caller categorises; parseTransactionsCsv stays free of
+        // the model so it remains a pure parser.
+        const explicitCategory = cell(columns.category);
 
         transactions.push({
             date,
             description: description.slice(0, 200),
             amountCents: cents,
             type,
-            category,
+            category: explicitCategory || null,
             dedupeHash: dedupeHash({ date, description, amountCents: cents, type }),
         });
     });

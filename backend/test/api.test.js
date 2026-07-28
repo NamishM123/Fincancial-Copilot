@@ -381,3 +381,137 @@ test('summary includes a monthly series after import', async () => {
     assert.ok(Array.isArray(res.body.monthly));
     assert.strictEqual(res.body.monthly[0].month, '2026-01');
 });
+
+// --- categorisation wiring and the correction loop ---
+
+test('a transaction with no category gets one from the categoriser', async () => {
+    const user = await makeUser();
+
+    const res = await request(app)
+        .post('/api/transactions')
+        .set(auth(user.token))
+        .send({ description: 'TRADER JOES #189', amount: 42.10, type: 'expense', date: '2026-05-01' });
+
+    assert.strictEqual(res.status, 201);
+    assert.strictEqual(res.body.transaction.category, 'Food');
+    assert.notStrictEqual(res.body.transaction.category_source, 'user');
+});
+
+test('an explicit category is authoritative over the categoriser', async () => {
+    const user = await makeUser();
+
+    const res = await request(app)
+        .post('/api/transactions')
+        .set(auth(user.token))
+        .send({ description: 'TRADER JOES #189', amount: 42.10, type: 'expense', category: 'Shopping', date: '2026-05-02' });
+
+    assert.strictEqual(res.body.transaction.category, 'Shopping');
+    assert.strictEqual(res.body.transaction.category_source, 'user');
+});
+
+test('CSV import categorises rows and reports how it decided', async () => {
+    const user = await makeUser();
+
+    const csv = [
+        'Date,Description,Amount',
+        '2026-02-01,NETFLIX.COM,-15.99',
+        '2026-02-02,SHELL OIL,-48.00',
+        '2026-02-03,ACME CORP PAYROLL,2150.00',
+    ].join('\n');
+
+    const res = await request(app).post('/api/transactions/import').set(auth(user.token)).send({ csv });
+
+    assert.strictEqual(res.body.imported, 3);
+    assert.ok(res.body.categorization, 'expected a categorisation breakdown');
+
+    const list = await request(app).get('/api/transactions').set(auth(user.token));
+    const byDescription = Object.fromEntries(list.body.transactions.map((t) => [t.description, t]));
+
+    assert.strictEqual(byDescription['NETFLIX.COM'].category, 'Entertainment');
+    assert.strictEqual(byDescription['SHELL OIL'].category, 'Transportation');
+    assert.strictEqual(byDescription['ACME CORP PAYROLL'].category, 'Salary');
+});
+
+test('a category column in the file overrides the categoriser', async () => {
+    const user = await makeUser();
+
+    const csv = 'Date,Description,Amount,Category\n2026-02-01,NETFLIX.COM,-15.99,Education';
+    await request(app).post('/api/transactions/import').set(auth(user.token)).send({ csv });
+
+    const list = await request(app).get('/api/transactions').set(auth(user.token));
+    assert.strictEqual(list.body.transactions[0].category, 'Education');
+    assert.strictEqual(list.body.transactions[0].category_source, 'user');
+});
+
+test('correcting a category updates the row and records the correction', async () => {
+    const user = await makeUser();
+
+    const created = await request(app)
+        .post('/api/transactions')
+        .set(auth(user.token))
+        .send({ description: 'BLUE BOTTLE COFFEE', amount: 5.50, type: 'expense', date: '2026-05-03' });
+
+    const id = created.body.transaction.id;
+    assert.strictEqual(created.body.transaction.category, 'Food');
+
+    const patched = await request(app)
+        .patch(`/api/transactions/${id}/category`)
+        .set(auth(user.token))
+        .send({ category: 'Entertainment' });
+
+    assert.strictEqual(patched.status, 200);
+    assert.strictEqual(patched.body.transaction.category, 'Entertainment');
+    assert.strictEqual(patched.body.transaction.category_source, 'user');
+
+    const stats = await request(app).get('/api/transactions/categorization-stats').set(auth(user.token));
+    assert.strictEqual(stats.body.corrections, 1);
+});
+
+test('correcting a category requires a category and rejects other users', async () => {
+    const alice = await makeUser();
+    const bob = await makeUser();
+
+    const created = await request(app)
+        .post('/api/transactions')
+        .set(auth(alice.token))
+        .send({ description: 'SAFEWAY #221', amount: 30, type: 'expense', date: '2026-05-04' });
+    const id = created.body.transaction.id;
+
+    const missing = await request(app).patch(`/api/transactions/${id}/category`).set(auth(alice.token)).send({});
+    assert.strictEqual(missing.status, 400);
+
+    const wrongUser = await request(app)
+        .patch(`/api/transactions/${id}/category`)
+        .set(auth(bob.token))
+        .send({ category: 'Food' });
+    assert.strictEqual(wrongUser.status, 404);
+});
+
+test('categorisation stats report observed accuracy once there is data', async () => {
+    const user = await makeUser();
+
+    const csv = [
+        'Date,Description,Amount',
+        '2026-03-01,NETFLIX.COM,-15.99',
+        '2026-03-02,SHELL OIL,-48.00',
+        '2026-03-03,SAFEWAY #221,-84.00',
+        '2026-03-04,CVS PHARMACY,-22.00',
+    ].join('\n');
+    await request(app).post('/api/transactions/import').set(auth(user.token)).send({ csv });
+
+    const before = await request(app).get('/api/transactions/categorization-stats').set(auth(user.token));
+    assert.strictEqual(before.body.autoCategorized, 4);
+    assert.strictEqual(before.body.observedAccuracy, 1);
+
+    const list = await request(app).get('/api/transactions').set(auth(user.token));
+    const target = list.body.transactions.find((t) => t.description === 'CVS PHARMACY');
+    await request(app)
+        .patch(`/api/transactions/${target.id}/category`)
+        .set(auth(user.token))
+        .send({ category: 'Shopping' });
+
+    const after = await request(app).get('/api/transactions/categorization-stats').set(auth(user.token));
+    assert.strictEqual(after.body.corrections, 1);
+    // One correction out of the three rows still auto-categorised.
+    assert.ok(after.body.observedAccuracy < 1);
+});

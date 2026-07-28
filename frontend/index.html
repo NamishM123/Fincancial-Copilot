@@ -671,6 +671,8 @@
             transactions: (limit, offset) => api.request(`/api/transactions?limit=${limit}&offset=${offset}`),
             addTransaction: (body) => api.request('/api/transactions', { method: 'POST', body }),
             deleteTransaction: (id) => api.request(`/api/transactions/${id}`, { method: 'DELETE' }),
+            correctCategory: (id, category) =>
+                api.request(`/api/transactions/${id}/category`, { method: 'PATCH', body: { category } }),
             importCsv: (csv) => api.request('/api/transactions/import', { method: 'POST', body: { csv } }),
             summary: () => api.request('/api/transactions/summary'),
             recurring: () => api.request('/api/transactions/recurring'),
@@ -977,6 +979,17 @@
                 }
             }
 
+            async correctCategory(id, category) {
+                try {
+                    await api.correctCategory(id, category);
+                    this.notify(`Recategorised as ${category}.`, 'success');
+                    // Refresh so the charts and the category breakdown move too.
+                    await this.loadAll();
+                } catch (err) {
+                    this.notify(err.message, 'error');
+                }
+            }
+
             async deleteTransaction(id) {
                 try {
                     await api.deleteTransaction(id);
@@ -1003,9 +1016,20 @@
                         const positive = t.type === 'income';
                         return `
                             <div class="transaction-item">
-                                <div>
+                                <div style="min-width:0;">
                                     <strong>${escapeHtml(t.description)}</strong><br>
-                                    <small style="color:#666;">${escapeHtml(t.category)} · ${escapeHtml(t.date)}</small>
+                                    <small style="color:#666;">
+                                        <select onchange="window.financeApp.correctCategory(${t.id}, this.value)"
+                                            title="${t.category_source === 'user' ? 'Set by you' : 'Predicted — change it to correct the model'}"
+                                            style="font:inherit; color:#666; border:none; background:none; padding:0; cursor:pointer;
+                                                   ${t.category_source && t.category_source !== 'user' ? 'border-bottom:1px dotted #aaa;' : ''}">
+                                            ${(CATEGORIES[t.type] || []).map((c) =>
+                                                `<option value="${c}"${c === t.category ? ' selected' : ''}>${c}</option>`
+                                            ).join('')}
+                                            ${(CATEGORIES[t.type] || []).includes(t.category) ? '' : `<option value="${escapeHtml(t.category)}" selected>${escapeHtml(t.category)}</option>`}
+                                        </select>
+                                        · ${escapeHtml(t.date)}
+                                    </small>
                                 </div>
                                 <div style="display:flex; align-items:center; gap:12px;">
                                     <span style="color:${positive ? '#27ae60' : '#c0392b'}; font-weight:600;">

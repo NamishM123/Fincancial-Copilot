@@ -4,7 +4,8 @@ const config = require('../config');
 const { authenticateToken } = require('../middleware/auth');
 const { toCents } = require('../lib/money');
 const { dedupeHash } = require('../lib/dedupe');
-const { parseTransactionsCsv, guessCategory } = require('../lib/csv');
+const { parseTransactionsCsv } = require('../lib/csv');
+const { categorize } = require('../lib/categorize');
 const analytics = require('../lib/analytics');
 
 const router = express.Router();
@@ -66,14 +67,28 @@ router.post('/', async (req, res, next) => {
     }
 
     const desc = String(description).trim().slice(0, 200);
-    const cat = (category && String(category).trim().slice(0, 60)) || guessCategory(desc, type);
+
+    // An explicit category from the user is authoritative; otherwise the
+    // categoriser decides and records how it decided.
+    let cat;
+    let source;
+    if (category && String(category).trim()) {
+        cat = String(category).trim().slice(0, 60);
+        source = 'user';
+    } else {
+        const predicted = categorize(desc, type);
+        cat = predicted.category;
+        source = predicted.source;
+    }
+
     const hash = dedupeHash({ date, description: desc, amountCents, type });
 
     try {
         const result = await db.run(
-            `INSERT INTO transactions (user_id, description, amount_cents, type, category, date, dedupe_hash)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [userId, desc, amountCents, type, cat, date, hash]
+            `INSERT INTO transactions
+                (user_id, description, amount_cents, type, category, date, dedupe_hash, category_source)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [userId, desc, amountCents, type, cat, date, hash, source]
         );
 
         const created = await db.get('SELECT * FROM transactions WHERE id = ?', [result.lastID]);
@@ -137,15 +152,27 @@ router.post('/import', async (req, res, next) => {
     try {
         await db.run('BEGIN');
         let imported = 0;
+        const sourceCounts = {};
 
         for (const t of transactions) {
+            // The parser leaves category null unless the file carried one, so
+            // categorisation happens here where the model lives.
+            let category = t.category;
+            let categorySource = 'user';
+            if (!category) {
+                const predicted = categorize(t.description, t.type);
+                category = predicted.category;
+                categorySource = predicted.source;
+            }
+            sourceCounts[categorySource] = (sourceCounts[categorySource] || 0) + 1;
+
             // INSERT OR IGNORE against the unique (user_id, dedupe_hash) index
             // makes re-importing an overlapping statement a no-op.
             const result = await db.run(
                 `INSERT OR IGNORE INTO transactions
-                    (user_id, description, amount_cents, type, category, date, dedupe_hash)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-                [userId, t.description, t.amountCents, t.type, t.category, t.date, t.dedupeHash]
+                    (user_id, description, amount_cents, type, category, date, dedupe_hash, category_source)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                [userId, t.description, t.amountCents, t.type, category, t.date, t.dedupeHash, categorySource]
             );
             if (result.changes > 0) imported++;
         }
@@ -158,6 +185,7 @@ router.post('/import', async (req, res, next) => {
             rowsFailed: errors.length,
             errors: errors.slice(0, 20),
             detectedColumns: columns,
+            categorization: sourceCounts,
         });
     } catch (err) {
         await db.run('ROLLBACK').catch(() => {});
@@ -196,6 +224,87 @@ router.get('/forecast', async (req, res, next) => {
         const rows = await loadAll(req.user.userId);
         const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 365);
         res.json({ forecast: analytics.forecast(rows, { days }) });
+    } catch (err) {
+        next(err);
+    }
+});
+
+/**
+ * Correct a transaction's category.
+ *
+ * Records the correction as training data as well as updating the row: a user
+ * override is a real label for a merchant they actually transact with, which is
+ * better evidence than anything in the hand-authored corpus.
+ */
+router.patch('/:id/category', async (req, res, next) => {
+    const userId = req.user.userId;
+    const category = req.body && req.body.category;
+
+    if (!category || typeof category !== 'string' || !category.trim()) {
+        return res.status(400).json({ error: 'A category is required' });
+    }
+
+    try {
+        const existing = await db.get(
+            'SELECT * FROM transactions WHERE id = ? AND user_id = ?',
+            [req.params.id, userId]
+        );
+        if (!existing) return res.status(404).json({ error: 'Transaction not found' });
+
+        const corrected = category.trim().slice(0, 60);
+
+        if (corrected !== existing.category) {
+            await db.run(
+                `INSERT INTO category_corrections
+                    (user_id, description, predicted_category, corrected_category)
+                 VALUES (?, ?, ?, ?)`,
+                [userId, existing.description, existing.category, corrected]
+            );
+        }
+
+        await db.run(
+            "UPDATE transactions SET category = ?, category_source = 'user' WHERE id = ? AND user_id = ?",
+            [corrected, req.params.id, userId]
+        );
+
+        const updated = await db.get('SELECT * FROM transactions WHERE id = ?', [req.params.id]);
+        res.json({ transaction: updated });
+    } catch (err) {
+        next(err);
+    }
+});
+
+/**
+ * How the categoriser is performing for this user, measured by how often they
+ * had to override it. Held-out accuracy from the eval says how the model does
+ * on unseen merchant names; this says how it does on their statement.
+ */
+router.get('/categorization-stats', async (req, res, next) => {
+    const userId = req.user.userId;
+
+    try {
+        const [bySource, corrections] = await Promise.all([
+            db.all(
+                `SELECT category_source, COUNT(*) AS count
+                 FROM transactions WHERE user_id = ? GROUP BY category_source`,
+                [userId]
+            ),
+            db.get('SELECT COUNT(*) AS total FROM category_corrections WHERE user_id = ?', [userId]),
+        ]);
+
+        const autoCategorized = bySource
+            .filter((r) => r.category_source !== 'user')
+            .reduce((sum, r) => sum + r.count, 0);
+
+        res.json({
+            bySource: Object.fromEntries(bySource.map((r) => [r.category_source, r.count])),
+            autoCategorized,
+            corrections: corrections.total,
+            // Only meaningful once there is something to divide by.
+            observedAccuracy: autoCategorized > 0
+                ? Math.max(0, 1 - corrections.total / autoCategorized)
+                : null,
+        });
     } catch (err) {
         next(err);
     }

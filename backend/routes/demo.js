@@ -46,8 +46,8 @@ router.post('/', demoLimiter, async (req, res, next) => {
         for (const t of transactions) {
             await db.run(
                 `INSERT OR IGNORE INTO transactions
-                    (user_id, description, amount_cents, type, category, date, dedupe_hash)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                    (user_id, description, amount_cents, type, category, date, dedupe_hash, category_source)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, 'user')`,
                 [userId, t.description, t.amountCents, t.type, t.category, t.date, t.dedupeHash]
             );
         }

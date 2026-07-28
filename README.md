@@ -37,6 +37,18 @@ missing. Tool calls see everything.
 - Bad rows are reported individually with spreadsheet-aligned row numbers instead of
   failing the whole file
 
+**Categorisation**
+- Transactions are categorised automatically from the merchant description
+- A naive Bayes classifier over word tokens and character 5-grams, layered on
+  a rule table that acts as both baseline and fallback
+- Measured by 5-fold cross-validation with **merchant-disjoint folds**: 40.2%
+  (rules alone) to 59.3% (combined) across 12 categories on merchants the model
+  has never seen. See "Categoriser accuracy" below for what that number does
+  and does not claim
+- Corrections are recorded and folded back into the model at startup, weighted
+  above the built-in corpus because they are real labels for merchants the user
+  actually transacts with
+
 **Analytics**
 - Spending by category, income vs expenses by month, savings rate
 - **Recurring charge detection** — groups by a normalised merchant key so
@@ -95,7 +107,7 @@ cd backend
 npm test
 ```
 
-85 tests via `node:test` and `supertest`, running against in-memory SQLite.
+103 tests via `node:test` and `supertest`, running against in-memory SQLite.
 
 Coverage worth calling out:
 
@@ -167,6 +179,8 @@ All endpoints except the first four require an `Authorization: Bearer <token>` h
 | `POST` | `/api/transactions` | Create |
 | `DELETE` | `/api/transactions/:id` | Delete |
 | `POST` | `/api/transactions/import` | Import CSV text |
+| `PATCH` | `/api/transactions/:id/category` | Correct a category, recorded as training data |
+| `GET` | `/api/transactions/categorization-stats` | Observed correction rate for this user |
 | `GET` | `/api/transactions/summary` | Totals, categories, monthly series |
 | `GET` | `/api/transactions/recurring` | Detected subscriptions |
 | `GET` | `/api/transactions/forecast` | Balance projection (`days`) |
@@ -185,9 +199,38 @@ ceiling that is per-user rather than per-IP.
 **Login does not leak account existence.** The same error and comparable work happen
 whether or not the email is registered.
 
-**Category detection is a rule table**, not a model — a documented baseline in
-`lib/csv.js` that a classifier would have to beat. Calling it "ML categorisation" would
-be overstating it.
+### Categoriser accuracy
+
+The reported 59.3% comes from 5-fold cross-validation where **folds are split by
+merchant, not by row**. A row split would put `AMAZON MKTP #123` in training and
+`AMAZON MKTP #456` in test, and the resulting number would measure memorisation. Every
+merchant in a test fold is one the model has never seen in any form.
+
+| Strategy | Accuracy |
+|---|---|
+| Rule table (baseline) | 40.2% |
+| Naive Bayes alone | 50.9% |
+| Combined, confidence threshold 0.6 | **59.3%** |
+
+Three caveats, stated so the number is not over-read:
+
+1. **The training corpus is hand-authored merchant names, not real bank data.** This
+   measures generalisation across merchant *names*; it does not predict performance on
+   any particular person's statement. `GET /api/transactions/categorization-stats`
+   reports the observed correction rate per user, which is the number that actually
+   matters. Replacing the corpus with real labeled data is the highest-value improvement
+   available here.
+2. **There is a ceiling.** Pure brand names — `WEGMANS`, `AETNA`, `KOHLS` — carry no
+   compositional signal, so no model reaches them from the name alone. Names containing a
+   category word (`PIZZERIA NAPOLI`, `CITY WATER DEPT`) generalise; arbitrary brands do
+   not.
+3. **The confidence threshold was chosen a priori, not tuned.** A sweep found 0.8 scores
+   about a point higher, but selecting it on the same folds the score is reported from
+   would make the number optimistic. It was not adopted.
+
+Feature choice was decided by sweeping eleven configurations. Words alone score 42.3%;
+adding 3- and 4-grams *hurts*, because short grams fire across every category and drown
+the discriminative ones. Words plus 5-grams was the best.
 
 ## Deployment
 
@@ -204,8 +247,9 @@ way, since demo accounts are provisioned on demand.
 Stated plainly so the feature list above can be trusted:
 
 - No bank account linking. CSV import is the only bulk path in.
-- No learned transaction categorisation. The rule table is a baseline, not a model.
+- The categoriser is trained on hand-authored merchant names, not real statements.
 - No budget goals or alerts.
+- Transactions can be created, recategorised, and deleted, but not otherwise edited.
 - No multi-currency support. Amounts are treated as a single currency.
 - No password reset, email verification, or token refresh.
 - No receipt photo parsing.

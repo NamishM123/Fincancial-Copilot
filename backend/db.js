@@ -55,6 +55,23 @@ const SCHEMA = `
         category TEXT NOT NULL,
         date TEXT NOT NULL,
         dedupe_hash TEXT NOT NULL,
+        -- How the category was decided: 'user', 'model', 'rules', or 'abstain'.
+        -- Kept so corrections can be told apart from the categoriser's own
+        -- output when measuring how often it is wrong in practice.
+        category_source TEXT NOT NULL DEFAULT 'user',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+    );
+
+    -- Every time a user overrides a predicted category we gain a real labeled
+    -- example for a merchant they actually transact with, which is worth more
+    -- than any row in the hand-authored training corpus.
+    CREATE TABLE IF NOT EXISTS category_corrections (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        description TEXT NOT NULL,
+        predicted_category TEXT,
+        corrected_category TEXT NOT NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
     );
@@ -65,6 +82,9 @@ const SCHEMA = `
     -- Makes re-importing an overlapping CSV export a no-op instead of a duplicate.
     CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_dedupe
         ON transactions (user_id, dedupe_hash);
+
+    CREATE INDEX IF NOT EXISTS idx_corrections_user
+        ON category_corrections (user_id, created_at DESC);
 `;
 
 async function init() {
