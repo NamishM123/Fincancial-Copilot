@@ -195,6 +195,78 @@
             transform: none;
         }
 
+        .filter-bar {
+            margin-bottom: 12px;
+        }
+
+        .filter-bar input,
+        .filter-bar select {
+            padding: 8px 10px;
+            border: 1px solid #e1e1e1;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: inherit;
+            min-width: 0;
+        }
+
+        .filter-bar > input[type="search"] {
+            width: 100%;
+            margin-bottom: 8px;
+        }
+
+        .filter-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+
+        #filterSummary {
+            font-size: 0.85em;
+            color: #666;
+            min-height: 1.2em;
+        }
+
+        .edit-form {
+            background: #fff;
+            border: 2px solid #667eea;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 10px;
+        }
+
+        .edit-form .edit-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+
+        .edit-form input,
+        .edit-form select {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #e1e1e1;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: inherit;
+        }
+
+        .edit-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .edit-actions button {
+            flex: 1;
+            padding: 8px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
         .transaction-list {
             min-height: 200px;
             max-height: 460px;
@@ -205,8 +277,10 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
-            gap: 12px;
+            gap: 10px;
             min-width: 0;
+            /* Long merchant strings need to break; dates and amounts opt out
+               with white-space: nowrap where they are rendered. */
             overflow-wrap: anywhere;
             padding: 15px;
             margin-bottom: 10px;
@@ -539,7 +613,35 @@
 
                 <!-- Recent Transactions -->
                 <div class="card">
-                    <h3>📊 Recent Transactions</h3>
+                    <h3>📊 Transactions</h3>
+                    <div class="filter-bar">
+                        <input type="search" id="filterSearch" placeholder="Search descriptions…" autocomplete="off">
+                        <div class="filter-row">
+                            <select id="filterCategory"><option value="">All categories</option></select>
+                            <select id="filterType">
+                                <option value="">All types</option>
+                                <option value="expense">Expenses</option>
+                                <option value="income">Income</option>
+                            </select>
+                        </div>
+                        <div class="filter-row">
+                            <input type="date" id="filterStart" title="From date">
+                            <input type="date" id="filterEnd" title="To date">
+                        </div>
+                        <div class="filter-row">
+                            <select id="filterSort">
+                                <option value="date">Sort by date</option>
+                                <option value="amount">Sort by amount</option>
+                                <option value="description">Sort by description</option>
+                                <option value="category">Sort by category</option>
+                            </select>
+                            <select id="filterOrder">
+                                <option value="desc">Descending</option>
+                                <option value="asc">Ascending</option>
+                            </select>
+                        </div>
+                        <div id="filterSummary"></div>
+                    </div>
                     <div class="transaction-list" id="transactionList">
                         <p style="text-align: center; color: #666; padding: 20px;">Loading transactions...</p>
                     </div>
@@ -668,7 +770,9 @@
             login: (body) => api.request('/api/login', { method: 'POST', body, auth: false }),
             demo: () => api.request('/api/demo', { method: 'POST', auth: false }),
             me: () => api.request('/api/me'),
-            transactions: (limit, offset) => api.request(`/api/transactions?limit=${limit}&offset=${offset}`),
+            transactions: (params) => api.request(`/api/transactions?${new URLSearchParams(params)}`),
+            categories: () => api.request('/api/transactions/categories'),
+            updateTransaction: (id, body) => api.request(`/api/transactions/${id}`, { method: 'PUT', body }),
             addTransaction: (body) => api.request('/api/transactions', { method: 'POST', body }),
             deleteTransaction: (id) => api.request(`/api/transactions/${id}`, { method: 'DELETE' }),
             correctCategory: (id, category) =>
@@ -719,6 +823,7 @@
         const logout = () => window.financeApp && window.financeApp.logout();
         const sendMessage = () => window.financeApp && window.financeApp.sendMessage();
         const loadMore = () => window.financeApp && window.financeApp.loadMore();
+        const applyFilters = () => window.financeApp && window.financeApp.applyFilters();
 
         const CATEGORIES = {
             income: ['Salary', 'Freelance', 'Investments', 'Other Income'],
@@ -732,6 +837,8 @@
                 this.user = null;
                 this.transactions = [];
                 this.pagination = { total: 0, offset: 0, hasMore: false };
+                this.filters = { search: '', category: '', type: '', start_date: '', end_date: '', sort: 'date', order: 'desc' };
+                this.editingId = null;
                 this.charts = {};
                 this.init();
             }
@@ -777,6 +884,18 @@
                 document.getElementById('type').addEventListener('change', (e) => {
                     this.updateCategoryOptions(e.target.value);
                 });
+
+                // Typing fires a request per keystroke without a debounce, and
+                // out-of-order responses then fight over the rendered list.
+                let searchTimer;
+                document.getElementById('filterSearch').addEventListener('input', () => {
+                    clearTimeout(searchTimer);
+                    searchTimer = setTimeout(() => this.applyFilters(), 250);
+                });
+
+                for (const id of ['filterCategory', 'filterType', 'filterStart', 'filterEnd', 'filterSort', 'filterOrder']) {
+                    document.getElementById(id).addEventListener('change', () => this.applyFilters());
+                }
             }
 
             // --- auth ---
@@ -869,19 +988,60 @@
                     this.loadTransactions(),
                     this.loadSummary(),
                     this.loadRecurring(),
+                    this.loadCategoryOptions(),
                 ]);
             }
 
-            async loadTransactions({ append = false } = {}) {
+            applyFilters() {
+                this.filters = {
+                    search: document.getElementById('filterSearch').value.trim(),
+                    category: document.getElementById('filterCategory').value,
+                    type: document.getElementById('filterType').value,
+                    start_date: document.getElementById('filterStart').value,
+                    end_date: document.getElementById('filterEnd').value,
+                    sort: document.getElementById('filterSort').value,
+                    order: document.getElementById('filterOrder').value,
+                };
+                this.editingId = null;
+                return this.loadTransactions();
+            }
+
+            async loadCategoryOptions() {
                 try {
-                    const offset = append ? this.pagination.offset : 0;
-                    const { transactions, pagination } = await api.transactions(PAGE_SIZE, offset);
+                    const { categories } = await api.categories();
+                    const select = document.getElementById('filterCategory');
+                    const current = select.value;
+
+                    select.innerHTML = '<option value="">All categories</option>' +
+                        categories.map((c) => `<option value="${escapeHtml(c.category)}">${escapeHtml(c.category)} (${c.count})</option>`).join('');
+
+                    // Keep the active filter selected across reloads.
+                    if (current && categories.some((c) => c.category === current)) select.value = current;
+                } catch (err) {
+                    // Filter options are a convenience; failing to load them
+                    // shouldn't take the list down with them.
+                }
+            }
+
+            async loadTransactions({ append = false } = {}) {
+                const offset = append ? this.pagination.offset : 0;
+                const params = { limit: PAGE_SIZE, offset };
+                for (const [key, value] of Object.entries(this.filters)) {
+                    if (value) params[key] = value;
+                }
+
+                // A slow earlier request must not overwrite a newer result.
+                const requestId = (this.latestRequest = (this.latestRequest || 0) + 1);
+
+                try {
+                    const { transactions, pagination } = await api.transactions(params);
+                    if (requestId !== this.latestRequest) return;
 
                     this.transactions = append ? [...this.transactions, ...transactions] : transactions;
                     this.pagination = { ...pagination, offset: offset + transactions.length };
                     this.renderTransactions();
                 } catch (err) {
-                    this.notify(err.message, 'error');
+                    if (requestId === this.latestRequest) this.notify(err.message, 'error');
                 }
             }
 
@@ -979,6 +1139,78 @@
                 }
             }
 
+            renderEditForm(t) {
+                const categories = CATEGORIES[t.type] || [];
+                const options = categories.includes(t.category) ? categories : [t.category, ...categories];
+
+                return `
+                    <div class="edit-form">
+                        <div class="edit-grid" style="grid-template-columns:1fr;">
+                            <input type="text" id="edit-description" value="${escapeHtml(t.description)}" placeholder="Description">
+                        </div>
+                        <div class="edit-grid">
+                            <input type="number" id="edit-amount" step="0.01" min="0.01" value="${(t.amount_cents / 100).toFixed(2)}">
+                            <input type="date" id="edit-date" value="${escapeHtml(t.date)}">
+                        </div>
+                        <div class="edit-grid">
+                            <select id="edit-type">
+                                <option value="expense"${t.type === 'expense' ? ' selected' : ''}>Expense</option>
+                                <option value="income"${t.type === 'income' ? ' selected' : ''}>Income</option>
+                            </select>
+                            <select id="edit-category">
+                                ${options.map((c) => `<option value="${escapeHtml(c)}"${c === t.category ? ' selected' : ''}>${escapeHtml(c)}</option>`).join('')}
+                            </select>
+                        </div>
+                        <div class="edit-actions">
+                            <button type="button" onclick="window.financeApp.saveEdit(${t.id})"
+                                style="background:#667eea; color:#fff;">Save</button>
+                            <button type="button" onclick="window.financeApp.cancelEdit()"
+                                style="background:#e9ecef; color:#444;">Cancel</button>
+                        </div>
+                    </div>`;
+            }
+
+            startEdit(id) {
+                this.editingId = id;
+                this.renderTransactions();
+                const field = document.getElementById('edit-description');
+                if (field) field.focus();
+
+                const typeSelect = document.getElementById('edit-type');
+                if (typeSelect) {
+                    typeSelect.addEventListener('change', (e) => {
+                        // The old category belongs to the other label space.
+                        const select = document.getElementById('edit-category');
+                        select.innerHTML = (CATEGORIES[e.target.value] || [])
+                            .map((c) => `<option value="${c}">${c}</option>`).join('');
+                    });
+                }
+            }
+
+            cancelEdit() {
+                this.editingId = null;
+                this.renderTransactions();
+            }
+
+            async saveEdit(id) {
+                const payload = {
+                    description: document.getElementById('edit-description').value.trim(),
+                    amount: document.getElementById('edit-amount').value,
+                    type: document.getElementById('edit-type').value,
+                    category: document.getElementById('edit-category').value,
+                    date: document.getElementById('edit-date').value,
+                };
+
+                try {
+                    await api.updateTransaction(id, payload);
+                    this.editingId = null;
+                    this.notify('Transaction updated.', 'success');
+                    await this.loadAll();
+                } catch (err) {
+                    this.notify(err.message, 'error');
+                }
+            }
+
             async correctCategory(id, category) {
                 try {
                     await api.correctCategory(id, category);
@@ -1000,19 +1232,31 @@
                 }
             }
 
+            hasActiveFilters() {
+                return Boolean(this.filters.search || this.filters.category || this.filters.type
+                    || this.filters.start_date || this.filters.end_date);
+            }
+
             renderTransactions() {
                 const container = document.getElementById('transactionList');
                 const loadMoreBtn = document.getElementById('loadMoreBtn');
+                const summary = document.getElementById('filterSummary');
+
+                summary.textContent = this.hasActiveFilters()
+                    ? `${this.pagination.total} matching ${this.pagination.total === 1 ? 'transaction' : 'transactions'}`
+                    : '';
 
                 if (this.transactions.length === 0) {
-                    container.innerHTML =
-                        '<p style="text-align:center; color:#666; padding:20px;">No transactions yet. Add one, or import a CSV.</p>';
+                    container.innerHTML = this.hasActiveFilters()
+                        ? '<p style="text-align:center; color:#666; padding:20px;">Nothing matches those filters.</p>'
+                        : '<p style="text-align:center; color:#666; padding:20px;">No transactions yet. Add one, or import a CSV.</p>';
                     loadMoreBtn.style.display = 'none';
                     return;
                 }
 
                 container.innerHTML = this.transactions
                     .map((t) => {
+                        if (t.id === this.editingId) return this.renderEditForm(t);
                         const positive = t.type === 'income';
                         return `
                             <div class="transaction-item">
@@ -1028,13 +1272,16 @@
                                             ).join('')}
                                             ${(CATEGORIES[t.type] || []).includes(t.category) ? '' : `<option value="${escapeHtml(t.category)}" selected>${escapeHtml(t.category)}</option>`}
                                         </select>
-                                        · ${escapeHtml(t.date)}
+                                        <span style="white-space:nowrap;">· ${escapeHtml(t.date)}</span>
                                     </small>
                                 </div>
-                                <div style="display:flex; align-items:center; gap:12px;">
-                                    <span style="color:${positive ? '#27ae60' : '#c0392b'}; font-weight:600;">
+                                <div style="display:flex; align-items:center; gap:10px; flex-shrink:0;">
+                                    <span style="color:${positive ? '#27ae60' : '#c0392b'}; font-weight:600; white-space:nowrap;">
                                         ${positive ? '+' : '−'}${money(t.amount_cents)}
                                     </span>
+                                    <button type="button" title="Edit"
+                                        onclick="window.financeApp.startEdit(${t.id})"
+                                        style="background:none; border:none; color:#999; cursor:pointer; font-size:0.95em;">✎</button>
                                     <button type="button" title="Delete"
                                         onclick="window.financeApp.deleteTransaction(${t.id})"
                                         style="background:none; border:none; color:#999; cursor:pointer; font-size:1.1em;">×</button>
