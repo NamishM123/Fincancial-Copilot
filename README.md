@@ -1,140 +1,215 @@
 # Finance Copilot
 
-An AI-powered personal finance management application that helps users track expenses, manage budgets, and get personalized financial advice.
+A personal finance tracker with an assistant that answers questions by querying your
+transactions rather than guessing at them.
+
+Import a bank CSV, and it detects your recurring charges, breaks down where the money
+goes, projects your balance forward, and lets you ask about any of it in plain English.
+
+## What makes it different from a chatbot with a finance theme
+
+The assistant does not receive your transactions as text in a prompt. It receives six
+**functions** it can call — `get_summary`, `get_spending_by_category`,
+`get_recurring_charges`, `get_monthly_totals`, `forecast_balance`, and
+`search_transactions` — each of which runs against the full ledger in SQL and
+`lib/analytics.js`.
+
+The practical consequence: **every number in a reply is computed by this codebase.** The
+model picks the query and phrases the answer. It is instructed never to state a figure it
+did not get from a tool.
+
+This also fixes a class of bug that context-stuffing produces. If you paste the 20 most
+recent transactions into a prompt and ask "how much did I spend on food this year", you
+get a confident answer derived from a partial view, with nothing to indicate anything was
+missing. Tool calls see everything.
 
 ## Features
 
-- **User Authentication**: Secure registration and login system
-- **Transaction Management**: Add, view, and categorize income and expenses
-- **Dashboard**: Real-time financial overview with balance, income, and expense summaries
-- **AI Financial Assistant**: Get personalized financial advice based on your transaction history
-- **Analytics**: Spending insights and financial trends (coming soon)
+**Transactions**
+- Manual entry, or CSV import from a bank or card statement
+- Column names detected automatically across the spellings banks actually use
+  (`Date` / `Transaction Date` / `Posting Date`, `Description` / `Merchant` / `Payee`,
+  and either an `Amount` column or separate `Debit` / `Credit` columns)
+- Handles quoted fields with embedded commas, escaped quotes, CRLF, the UTF-8 BOM Excel
+  writes, negative and parenthesised-negative amounts, and several date formats
+- Re-importing an overlapping statement is safe: rows are keyed by a content hash, so
+  duplicates are skipped rather than double-entered
+- Bad rows are reported individually with spreadsheet-aligned row numbers instead of
+  failing the whole file
 
-## Tech Stack
+**Analytics**
+- Spending by category, income vs expenses by month, savings rate
+- **Recurring charge detection** — groups by a normalised merchant key so
+  `SQ *BLUE BOTTLE #4412` and `#9981` collapse to one merchant, then requires at least
+  three occurrences, a median interval matching a known cadence, and a stable amount.
+  Reports cadence, monthly equivalent, and price increases
+- Balance forecasting from detected recurring charges plus a daily discretionary rate
 
-**Frontend:**
-- HTML5, CSS3, JavaScript
-- Responsive design with modern UI/UX
-- Real-time dashboard updates
+**Assistant**
+- Tool calling over the analytics above
+- Works without an API key: falls back to answering from the same analytics, clearly
+  labelled, so the figures stay real even when the model is unavailable
 
-**Backend:**
-- Node.js with Express.js
-- SQLite database for data persistence
-- JWT authentication
-- OpenAI GPT-3.5 integration for AI chat
+**Accounts**
+- Registration and login with bcrypt-hashed passwords and JWT sessions
+- One-click demo account seeded with a year of generated sample data
 
-**Dependencies:**
-- bcryptjs - Password hashing
-- jsonwebtoken - JWT token generation
-- cors - Cross-origin resource sharing
-- openai - OpenAI API integration
-- sqlite3 - Database management
+## Running it
 
-## Setup Instructions
+Requires Node 18 or newer.
 
-### Prerequisites
-- Node.js (v14 or higher)
-- npm package manager
-- OpenAI API key
+```bash
+git clone https://github.com/NamishM123/Fincancial-Copilot.git
+cd Fincancial-Copilot/backend
+npm install
 
-### Installation
+cp .env.example .env
+npm run gen-secret          # paste the output into .env as JWT_SECRET
 
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/NamishM123/Fincancial-Copilot.git
-   cd Fincancial-Copilot
-   ```
-
-2. **Install backend dependencies**
-   ```bash
-   cd backend
-   npm install express sqlite3 bcryptjs jsonwebtoken cors openai dotenv
-   ```
-
-3. **Create environment file**
-   ```bash
-   touch .env
-   ```
-   Add your OpenAI API key:
-   ```
-   OPENAI_API_KEY=your_openai_api_key_here
-   ```
-
-4. **Start the backend server**
-   ```bash
-   node server.js
-   ```
-   Server will run on http://localhost:3000
-
-5. **Open the frontend**
-   - Open `frontend/index.html` in your web browser
-   - Or serve it through a local web server
-
-## Usage
-
-1. **Register/Login**: Create an account or sign in with existing credentials
-2. **Add Transactions**: Record your income and expenses with categories and dates
-3. **View Dashboard**: Monitor your financial overview with real-time balance calculations
-4. **Chat with AI**: Ask for personalized financial advice based on your spending patterns
-5. **Analyze Spending**: Review transaction history and spending categories
-
-## API Endpoints
-
-- `POST /api/register` - User registration
-- `POST /api/login` - User authentication
-- `GET /api/transactions` - Fetch user transactions
-- `POST /api/transactions` - Add new transaction
-- `GET /api/summary` - Get financial summary
-- `POST /api/chat` - AI chat assistant
-
-## Project Structure
-
-```
-Fincancial-Copilot/
-├── backend/
-│   ├── server.js          # Express server and API routes
-│   ├── .env              # Environment variables (not tracked)
-│   └── finance.db        # SQLite database (auto-generated)
-├── frontend/
-│   └── index.html        # Single-page application
-├── .gitignore           # Git ignore rules
-└── README.md           # Project documentation
+npm start
 ```
 
-## Security Features
+Then open <http://localhost:3000>. The server serves the frontend as well as the API, so
+there is nothing else to start.
 
-- Password hashing with bcrypt
-- JWT token-based authentication
-- Environment variables for sensitive data
-- Git ignore for API keys and database files
-- CORS protection
+Click **Try the demo** to get a populated dashboard immediately, or register an account
+and import a CSV.
 
-## Future Enhancements
+### Environment variables
 
-- Bank account integration (Plaid API)
-- Advanced analytics and charts
-- Budget goal setting
-- Expense categorization with machine learning
-- Mobile app development
-- Receipt photo upload and parsing
-- Multi-currency support
+| Variable | Required | Default | Notes |
+|---|---|---|---|
+| `JWT_SECRET` | **yes** | — | Signs session tokens. Must be ≥32 characters. The server refuses to start without it. |
+| `JWT_EXPIRES_IN` | no | `24h` | Session lifetime. |
+| `PORT` | no | `3000` | |
+| `DATABASE_FILE` | no | `finance.db` | SQLite file, relative to `backend/`. |
+| `OPENAI_API_KEY` | no | — | Without it the assistant answers from the built-in analytics. |
+| `OPENAI_MODEL` | no | `gpt-4o-mini` | |
+| `OPENAI_MAX_TOKENS` | no | `500` | |
+| `CORS_ORIGINS` | no | — | Comma-separated. Only needed if the frontend is hosted separately. |
 
-## Contributing
+## Tests
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/new-feature`)
-3. Commit your changes (`git commit -m 'Add new feature'`)
-4. Push to the branch (`git push origin feature/new-feature`)
-5. Open a Pull Request
+```bash
+cd backend
+npm test
+```
+
+85 tests via `node:test` and `supertest`, running against in-memory SQLite.
+
+Coverage worth calling out:
+
+- **Cross-user isolation** — user B gets a 404 on user A's transaction, and the row is
+  verified still present afterwards
+- **Forged tokens** — a JWT signed with a different secret is rejected
+- **Cent-exact arithmetic** — ten `0.10` expenses sum to exactly `100` cents
+- **Recurring detection negatives** — an irregularly visited merchant, a merchant whose
+  amount swings, a two-occurrence series, and recurring income all correctly fail to
+  qualify. A detector that fires on everything is worse than none
+- **CSV edge cases** — quoted commas, BOM, `2026-02-31` rejected rather than rolled into
+  March, re-import as a no-op
+
+### Assistant evals
+
+`test/chat-evals.test.js` scores the assistant against a fixed ledger fixture with
+hand-computed totals:
+
+```
+eval score: 12/12
+```
+
+Twelve questions, each paired with a known-correct answer, chosen so there is a plausible
+wrong answer available to get wrong. "How much did I spend in January?" must return
+`176514` cents, not the all-time `507812`. A query for a month with no data must return
+zero rather than the all-time total.
+
+The point is to make assistant quality a number that moves rather than a feeling.
+
+## Project structure
+
+```
+backend/
+├── app.js                    Express app (exported for tests)
+├── server.js                 boot and graceful shutdown
+├── config.js                 env parsing with fail-fast validation
+├── db.js                     schema and promisified sqlite3
+├── middleware/auth.js        JWT verification
+├── routes/
+│   ├── auth.js               register, login, me
+│   ├── transactions.js       CRUD, CSV import, summary, recurring, forecast
+│   ├── chat.js               tool definitions and the tool-calling loop
+│   └── demo.js               seeded sandbox accounts
+├── lib/
+│   ├── analytics.js          summaries, recurring detection, forecasting
+│   ├── csv.js                parser, column detection, date parsing
+│   ├── money.js              dollar/cent conversion
+│   ├── dedupe.js             content hashing for duplicate detection
+│   └── seed.js               demo data generator
+└── test/
+
+frontend/
+├── index.html                single-page app
+└── vendor/chart.umd.min.js   vendored rather than CDN-loaded
+```
+
+## API
+
+All endpoints except the first four require an `Authorization: Bearer <token>` header.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/health` | Status, and whether an AI key is configured |
+| `POST` | `/api/register` | Create an account |
+| `POST` | `/api/login` | Obtain a token |
+| `POST` | `/api/demo` | Provision a seeded demo account |
+| `GET` | `/api/me` | Current user |
+| `GET` | `/api/transactions` | List, paginated (`limit`, `offset`) |
+| `POST` | `/api/transactions` | Create |
+| `DELETE` | `/api/transactions/:id` | Delete |
+| `POST` | `/api/transactions/import` | Import CSV text |
+| `GET` | `/api/transactions/summary` | Totals, categories, monthly series |
+| `GET` | `/api/transactions/recurring` | Detected subscriptions |
+| `GET` | `/api/transactions/forecast` | Balance projection (`days`) |
+| `POST` | `/api/chat` | Ask the assistant |
+
+**All monetary values in the API are integer cents.** Money is never stored or transmitted
+as a float: binary floating point cannot represent `0.10` exactly, so summing float
+amounts accumulates drift and produces balances that do not reconcile.
+
+## Implementation notes
+
+**Rate limits.** 20 auth attempts per IP per 15 minutes, 10 chat messages per user per
+minute, 30 demo accounts per IP per hour. `/api/chat` costs money per call, so it needs a
+ceiling that is per-user rather than per-IP.
+
+**Login does not leak account existence.** The same error and comparable work happen
+whether or not the email is registered.
+
+**Category detection is a rule table**, not a model — a documented baseline in
+`lib/csv.js` that a classifier would have to beat. Calling it "ML categorisation" would
+be overstating it.
+
+## Deployment
+
+The server serves both the API and the frontend, so it deploys as a single Node service.
+Set `JWT_SECRET` and it will boot.
+
+One caveat worth knowing before you deploy: **SQLite on an ephemeral filesystem loses data
+on every restart.** Most platform free tiers have ephemeral disks. For anything with real
+users, either attach a persistent volume or move to Postgres. The demo works fine either
+way, since demo accounts are provisioned on demand.
+
+## Not implemented
+
+Stated plainly so the feature list above can be trusted:
+
+- No bank account linking. CSV import is the only bulk path in.
+- No learned transaction categorisation. The rule table is a baseline, not a model.
+- No budget goals or alerts.
+- No multi-currency support. Amounts are treated as a single currency.
+- No password reset, email verification, or token refresh.
+- No receipt photo parsing.
 
 ## License
 
-This project is open source and available under the [MIT License](LICENSE).
-
-## Support
-
-If you encounter any issues or have questions, please open an issue on GitHub or contact the development team.
-
----
-
-**Note**: This application requires an OpenAI API key for the AI chat functionality. Without it, the system will provide helpful fallback responses but won't have full AI capabilities.
+MIT.
