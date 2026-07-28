@@ -22,6 +22,7 @@ app.get('/api/health', (req, res) => {
 });
 
 app.use('/api', require('./routes/auth'));
+app.use('/api/demo', require('./routes/demo'));
 app.use('/api/transactions', require('./routes/transactions'));
 app.use('/api/chat', require('./routes/chat'));
 
