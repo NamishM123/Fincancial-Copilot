@@ -262,3 +262,122 @@ test('unknown API routes return JSON, not the SPA shell', async () => {
     assert.strictEqual(res.status, 404);
     assert.strictEqual(res.body.error, 'Endpoint not found');
 });
+
+// --- CSV import (added with the analytics engine) ---
+
+const SAMPLE_CSV = [
+    'Transaction Date,Description,Amount',
+    '2026-01-05,ACME PAYROLL,2500.00',
+    '2026-01-06,SAFEWAY #1234,-84.21',
+    '2026-01-07,"AMAZON MKTP, INC",-32.10',
+].join('\n');
+
+test('CSV import inserts rows, categorises them, and reports counts', async () => {
+    const user = await makeUser();
+
+    const res = await request(app)
+        .post('/api/transactions/import')
+        .set(auth(user.token))
+        .send({ csv: SAMPLE_CSV });
+
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.body.imported, 3);
+    assert.strictEqual(res.body.rowsFailed, 0);
+
+    const list = await request(app).get('/api/transactions').set(auth(user.token));
+    const payroll = list.body.transactions.find((t) => t.description === 'ACME PAYROLL');
+    const safeway = list.body.transactions.find((t) => t.description.startsWith('SAFEWAY'));
+
+    assert.strictEqual(payroll.type, 'income');
+    assert.strictEqual(payroll.category, 'Salary');
+    assert.strictEqual(safeway.type, 'expense');
+    assert.strictEqual(safeway.amount_cents, 8421);
+
+    // The quoted field containing a comma must survive as one description.
+    assert.ok(list.body.transactions.some((t) => t.description === 'AMAZON MKTP, INC'));
+});
+
+test('re-importing the same CSV is a no-op', async () => {
+    const user = await makeUser();
+    const post = () => request(app).post('/api/transactions/import').set(auth(user.token)).send({ csv: SAMPLE_CSV });
+
+    const first = await post();
+    assert.strictEqual(first.body.imported, 3);
+
+    const second = await post();
+    assert.strictEqual(second.body.imported, 0);
+    assert.strictEqual(second.body.duplicatesSkipped, 3);
+
+    const list = await request(app).get('/api/transactions').set(auth(user.token));
+    assert.strictEqual(list.body.pagination.total, 3);
+});
+
+test('an overlapping statement imports only the new rows', async () => {
+    const user = await makeUser();
+
+    await request(app).post('/api/transactions/import').set(auth(user.token)).send({ csv: SAMPLE_CSV });
+
+    const overlapping = `${SAMPLE_CSV}\n2026-01-08,NEW MERCHANT,-15.00`;
+    const res = await request(app).post('/api/transactions/import').set(auth(user.token)).send({ csv: overlapping });
+
+    assert.strictEqual(res.body.imported, 1);
+    assert.strictEqual(res.body.duplicatesSkipped, 3);
+});
+
+test('CSV import rejects empty input and files with no usable columns', async () => {
+    const user = await makeUser();
+    const post = (csv) => request(app).post('/api/transactions/import').set(auth(user.token)).send({ csv });
+
+    assert.strictEqual((await post('')).status, 400);
+    assert.strictEqual((await post('just,some,headers\n1,2,3')).status, 400);
+});
+
+test('CSV import is scoped to the importing user', async () => {
+    const alice = await makeUser();
+    const bob = await makeUser();
+
+    await request(app).post('/api/transactions/import').set(auth(alice.token)).send({ csv: SAMPLE_CSV });
+
+    const bobList = await request(app).get('/api/transactions').set(auth(bob.token));
+    assert.strictEqual(bobList.body.pagination.total, 0);
+
+    // Identical rows for a different user are not duplicates.
+    const bobImport = await request(app).post('/api/transactions/import').set(auth(bob.token)).send({ csv: SAMPLE_CSV });
+    assert.strictEqual(bobImport.body.imported, 3);
+});
+
+test('recurring and forecast endpoints work end to end', async () => {
+    const user = await makeUser();
+
+    const rows = ['Date,Description,Amount'];
+    for (let i = 0; i < 6; i++) {
+        const date = new Date(Date.UTC(2026, 0, 5) + i * 30 * 86400000).toISOString().slice(0, 10);
+        rows.push(`${date},NETFLIX.COM,-15.99`);
+    }
+    await request(app).post('/api/transactions/import').set(auth(user.token)).send({ csv: rows.join('\n') });
+
+    const recurring = await request(app).get('/api/transactions/recurring').set(auth(user.token));
+    assert.strictEqual(recurring.status, 200);
+    assert.strictEqual(recurring.body.recurring.length, 1);
+    assert.strictEqual(recurring.body.recurring[0].cadence, 'monthly');
+    assert.strictEqual(recurring.body.recurring[0].typicalCents, 1599);
+
+    const forecast = await request(app).get('/api/transactions/forecast?days=30').set(auth(user.token));
+    assert.strictEqual(forecast.status, 200);
+    assert.strictEqual(forecast.body.forecast.days, 30);
+
+    // Clamped to the 1-365 range rather than honoured verbatim.
+    const clamped = await request(app).get('/api/transactions/forecast?days=99999').set(auth(user.token));
+    assert.strictEqual(clamped.body.forecast.days, 365);
+});
+
+test('summary includes a monthly series after import', async () => {
+    const user = await makeUser();
+    await request(app).post('/api/transactions/import').set(auth(user.token)).send({ csv: SAMPLE_CSV });
+
+    const res = await request(app).get('/api/transactions/summary').set(auth(user.token));
+    assert.strictEqual(res.body.summary.incomeCents, 250000);
+    assert.strictEqual(res.body.summary.expenseCents, 11631);
+    assert.ok(Array.isArray(res.body.monthly));
+    assert.strictEqual(res.body.monthly[0].month, '2026-01');
+});
