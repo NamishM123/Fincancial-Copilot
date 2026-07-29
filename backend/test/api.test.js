@@ -515,3 +515,240 @@ test('categorisation stats report observed accuracy once there is data', async (
     // One correction out of the three rows still auto-categorised.
     assert.ok(after.body.observedAccuracy < 1);
 });
+
+// --- search, filtering, sorting, editing ---
+
+async function seedForFiltering(token) {
+    const rows = [
+        ['SAFEWAY GROCERIES', 84.21, 'expense', 'Food', '2026-01-10'],
+        ['BLUE BOTTLE COFFEE', 4.50, 'expense', 'Food', '2026-01-15'],
+        ['UBER TRIP', 23.40, 'expense', 'Transportation', '2026-02-05'],
+        ['NETFLIX SUBSCRIPTION', 15.99, 'expense', 'Entertainment', '2026-02-20'],
+        ['ACME PAYROLL', 3000.00, 'income', 'Salary', '2026-03-01'],
+        ['UBER EATS ORDER', 31.10, 'expense', 'Food', '2026-03-12'],
+    ];
+
+    for (const [description, amount, type, category, date] of rows) {
+        const res = await request(app)
+            .post('/api/transactions')
+            .set(auth(token))
+            .send({ description, amount, type, category, date });
+        assert.strictEqual(res.status, 201, `seed failed: ${JSON.stringify(res.body)}`);
+    }
+}
+
+const list = (token, qs = '') => request(app).get(`/api/transactions${qs}`).set(auth(token));
+
+test('search matches descriptions case-insensitively', async () => {
+    const user = await makeUser();
+    await seedForFiltering(user.token);
+
+    const res = await list(user.token, '?search=uber');
+    assert.strictEqual(res.body.pagination.total, 2);
+    assert.ok(res.body.transactions.every((t) => t.description.toUpperCase().includes('UBER')));
+});
+
+test('search wildcards are escaped rather than interpreted', async () => {
+    const user = await makeUser();
+    await seedForFiltering(user.token);
+    await request(app)
+        .post('/api/transactions')
+        .set(auth(user.token))
+        .send({ description: '100% CASHBACK BONUS', amount: 10, type: 'income', category: 'Other Income', date: '2026-04-01' });
+
+    // An unescaped '%' would make this match every row.
+    const res = await list(user.token, '?search=100%25');
+    assert.strictEqual(res.body.pagination.total, 1);
+
+    const underscore = await list(user.token, '?search=_');
+    assert.strictEqual(underscore.body.pagination.total, 0);
+});
+
+test('filters by category, type, and date range', async () => {
+    const user = await makeUser();
+    await seedForFiltering(user.token);
+
+    assert.strictEqual((await list(user.token, '?category=Food')).body.pagination.total, 3);
+    assert.strictEqual((await list(user.token, '?type=income')).body.pagination.total, 1);
+    assert.strictEqual((await list(user.token, '?start_date=2026-02-01&end_date=2026-02-28')).body.pagination.total, 2);
+});
+
+test('filters by amount range', async () => {
+    const user = await makeUser();
+    await seedForFiltering(user.token);
+
+    const small = await list(user.token, '?max_amount=25');
+    assert.ok(small.body.transactions.every((t) => t.amount_cents <= 2500));
+
+    const large = await list(user.token, '?min_amount=100');
+    assert.strictEqual(large.body.pagination.total, 1);
+    assert.strictEqual(large.body.transactions[0].description, 'ACME PAYROLL');
+});
+
+test('filters combine, and the count matches the rows it describes', async () => {
+    const user = await makeUser();
+    await seedForFiltering(user.token);
+
+    const res = await list(user.token, '?category=Food&start_date=2026-01-01&end_date=2026-02-28');
+    assert.strictEqual(res.body.pagination.total, 2);
+    assert.strictEqual(res.body.transactions.length, 2);
+
+    // A count that disagrees with its rows produces a "Load more" that lies.
+    const paged = await list(user.token, '?category=Food&limit=1');
+    assert.strictEqual(paged.body.pagination.total, 3);
+    assert.strictEqual(paged.body.transactions.length, 1);
+    assert.strictEqual(paged.body.pagination.hasMore, true);
+});
+
+test('sorting is whitelisted and falls back safely', async () => {
+    const user = await makeUser();
+    await seedForFiltering(user.token);
+
+    const byAmount = await list(user.token, '?sort=amount&order=desc');
+    const amounts = byAmount.body.transactions.map((t) => t.amount_cents);
+    assert.deepStrictEqual(amounts, [...amounts].sort((a, b) => b - a));
+
+    const ascending = await list(user.token, '?sort=amount&order=asc');
+    assert.strictEqual(ascending.body.transactions[0].amount_cents, 450);
+
+    // An unknown sort column must not reach SQL; it falls back to date.
+    const injected = await list(user.token, '?sort=amount_cents;DROP TABLE transactions--');
+    assert.strictEqual(injected.status, 200);
+    assert.strictEqual(injected.body.pagination.total, 6);
+});
+
+test('filtering is scoped to the requesting user', async () => {
+    const alice = await makeUser();
+    const bob = await makeUser();
+    await seedForFiltering(alice.token);
+
+    const res = await list(bob.token, '?search=uber');
+    assert.strictEqual(res.body.pagination.total, 0);
+});
+
+test('categories endpoint lists what the user actually has', async () => {
+    const user = await makeUser();
+    await seedForFiltering(user.token);
+
+    const res = await request(app).get('/api/transactions/categories').set(auth(user.token));
+    const food = res.body.categories.find((c) => c.category === 'Food');
+
+    assert.strictEqual(food.count, 3);
+    assert.strictEqual(food.type, 'expense');
+    assert.ok(res.body.categories.some((c) => c.category === 'Salary'));
+});
+
+test('editing updates only the fields that were sent', async () => {
+    const user = await makeUser();
+    const created = await request(app)
+        .post('/api/transactions')
+        .set(auth(user.token))
+        .send({ description: 'Typo descriptoin', amount: 12.00, type: 'expense', category: 'Food', date: '2026-06-01' });
+
+    const id = created.body.transaction.id;
+
+    const res = await request(app)
+        .put(`/api/transactions/${id}`)
+        .set(auth(user.token))
+        .send({ description: 'Corrected description' });
+
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.body.transaction.description, 'Corrected description');
+    assert.strictEqual(res.body.transaction.amount_cents, 1200);
+    assert.strictEqual(res.body.transaction.category, 'Food');
+    assert.strictEqual(res.body.transaction.date, '2026-06-01');
+});
+
+test('editing recomputes the dedupe hash so imports still detect duplicates', async () => {
+    const user = await makeUser();
+    const created = await request(app)
+        .post('/api/transactions')
+        .set(auth(user.token))
+        .send({ description: 'PLACEHOLDER', amount: 1.00, type: 'expense', category: 'Other', date: '2026-06-02' });
+
+    const id = created.body.transaction.id;
+    const originalHash = created.body.transaction.dedupe_hash;
+
+    const edited = await request(app)
+        .put(`/api/transactions/${id}`)
+        .set(auth(user.token))
+        .send({ description: 'REAL MERCHANT', amount: 25.00, date: '2026-06-03' });
+
+    assert.notStrictEqual(edited.body.transaction.dedupe_hash, originalHash);
+
+    // A stale hash here would let this same row import again as a "new" one.
+    const csv = 'Date,Description,Amount\n2026-06-03,REAL MERCHANT,-25.00';
+    const imported = await request(app).post('/api/transactions/import').set(auth(user.token)).send({ csv });
+    assert.strictEqual(imported.body.imported, 0);
+    assert.strictEqual(imported.body.duplicatesSkipped, 1);
+});
+
+test('editing validates the same rules as creating', async () => {
+    const user = await makeUser();
+    const created = await request(app)
+        .post('/api/transactions')
+        .set(auth(user.token))
+        .send({ description: 'Valid', amount: 10, type: 'expense', category: 'Food', date: '2026-06-04' });
+    const id = created.body.transaction.id;
+
+    const put = (body) => request(app).put(`/api/transactions/${id}`).set(auth(user.token)).send(body);
+
+    assert.strictEqual((await put({ amount: 0 })).status, 400);
+    assert.strictEqual((await put({ amount: -3 })).status, 400);
+    assert.strictEqual((await put({ type: 'transfer' })).status, 400);
+    assert.strictEqual((await put({ date: '06/04/2026' })).status, 400);
+    assert.strictEqual((await put({ description: '   ' })).status, 400);
+});
+
+test('editing a row into an existing one is rejected as a duplicate', async () => {
+    const user = await makeUser();
+    const base = { amount: 10, type: 'expense', category: 'Food', date: '2026-07-01' };
+
+    await request(app).post('/api/transactions').set(auth(user.token)).send({ ...base, description: 'FIRST' });
+    const second = await request(app).post('/api/transactions').set(auth(user.token)).send({ ...base, description: 'SECOND' });
+
+    const res = await request(app)
+        .put(`/api/transactions/${second.body.transaction.id}`)
+        .set(auth(user.token))
+        .send({ description: 'FIRST' });
+
+    assert.strictEqual(res.status, 409);
+});
+
+test('switching type re-derives a category from the new label space', async () => {
+    const user = await makeUser();
+    const created = await request(app)
+        .post('/api/transactions')
+        .set(auth(user.token))
+        .send({ description: 'ACME CORP PAYROLL', amount: 2000, type: 'expense', category: 'Utilities', date: '2026-07-02' });
+
+    const res = await request(app)
+        .put(`/api/transactions/${created.body.transaction.id}`)
+        .set(auth(user.token))
+        .send({ type: 'income' });
+
+    assert.strictEqual(res.body.transaction.type, 'income');
+    // "Utilities" is not a valid income category; it must not survive the switch.
+    assert.notStrictEqual(res.body.transaction.category, 'Utilities');
+    assert.strictEqual(res.body.transaction.category, 'Salary');
+});
+
+test('users cannot edit each others transactions', async () => {
+    const alice = await makeUser();
+    const bob = await makeUser();
+
+    const created = await request(app)
+        .post('/api/transactions')
+        .set(auth(alice.token))
+        .send({ description: 'Alice row', amount: 10, type: 'expense', category: 'Food', date: '2026-07-03' });
+
+    const res = await request(app)
+        .put(`/api/transactions/${created.body.transaction.id}`)
+        .set(auth(bob.token))
+        .send({ description: 'Hijacked' });
+
+    assert.strictEqual(res.status, 404);
+
+    const stillThere = await request(app).get('/api/transactions?search=Alice row').set(auth(alice.token));
+    assert.strictEqual(stillThere.body.transactions[0].description, 'Alice row');
+});

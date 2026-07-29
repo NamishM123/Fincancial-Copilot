@@ -27,6 +27,10 @@ missing. Tool calls see everything.
 
 **Transactions**
 - Manual entry, or CSV import from a bank or card statement
+- Search by description, filter by category, type, date range, and amount range,
+  and sort by any of date, amount, description, or category
+- Full editing: change any field, with the duplicate-detection hash recomputed
+  so a later import of the same row is still recognised
 - Column names detected automatically across the spellings banks actually use
   (`Date` / `Transaction Date` / `Posting Date`, `Description` / `Merchant` / `Payee`,
   and either an `Amount` column or separate `Debit` / `Credit` columns)
@@ -107,7 +111,7 @@ cd backend
 npm test
 ```
 
-103 tests via `node:test` and `supertest`, running against in-memory SQLite.
+117 tests via `node:test` and `supertest`, running against in-memory SQLite.
 
 Coverage worth calling out:
 
@@ -120,6 +124,9 @@ Coverage worth calling out:
   qualify. A detector that fires on everything is worse than none
 - **CSV edge cases** — quoted commas, BOM, `2026-02-31` rejected rather than rolled into
   March, re-import as a no-op
+- **Query safety** — LIKE wildcards in a search term are escaped rather than interpreted,
+  and an unrecognised sort column falls back to a whitelisted default instead of reaching
+  SQL
 
 ### Assistant evals
 
@@ -175,9 +182,11 @@ All endpoints except the first four require an `Authorization: Bearer <token>` h
 | `POST` | `/api/login` | Obtain a token |
 | `POST` | `/api/demo` | Provision a seeded demo account |
 | `GET` | `/api/me` | Current user |
-| `GET` | `/api/transactions` | List, paginated (`limit`, `offset`) |
+| `GET` | `/api/transactions` | List, paginated and filterable (`limit`, `offset`, `search`, `category`, `type`, `start_date`, `end_date`, `min_amount`, `max_amount`, `sort`, `order`) |
 | `POST` | `/api/transactions` | Create |
+| `PUT` | `/api/transactions/:id` | Edit any field |
 | `DELETE` | `/api/transactions/:id` | Delete |
+| `GET` | `/api/transactions/categories` | Distinct categories present, for filter controls |
 | `POST` | `/api/transactions/import` | Import CSV text |
 | `PATCH` | `/api/transactions/:id/category` | Correct a category, recorded as training data |
 | `GET` | `/api/transactions/categorization-stats` | Observed correction rate for this user |
@@ -249,7 +258,6 @@ Stated plainly so the feature list above can be trusted:
 - No bank account linking. CSV import is the only bulk path in.
 - The categoriser is trained on hand-authored merchant names, not real statements.
 - No budget goals or alerts.
-- Transactions can be created, recategorised, and deleted, but not otherwise edited.
 - No multi-currency support. Amounts are treated as a single currency.
 - No password reset, email verification, or token refresh.
 - No receipt photo parsing.
