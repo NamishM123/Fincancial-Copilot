@@ -826,7 +826,7 @@
             updateCategoryOptions(type) {
                 const categorySelect = document.getElementById('category');
                 categorySelect.innerHTML = '<option value="">Select category</option>';
-                
+
                 if (type && this.categories[type]) {
                     this.categories[type].forEach(category => {
                         const option = document.createElement('option');
@@ -835,6 +835,130 @@
                         categorySelect.appendChild(option);
                     });
                 }
+            }
+
+            downloadTemplate() {
+                const rows = [
+                    ['Description', 'Amount', 'Type', 'Category', 'Date'],
+                    ['Salary', '3000', 'income', 'Salary', new Date().toISOString().split('T')[0]],
+                    ['Groceries', '85.50', 'expense', 'Food', new Date().toISOString().split('T')[0]]
+                ];
+                const csvContent = rows.map(row => row.join(',')).join('\n');
+
+                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = 'transaction_template.csv';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                URL.revokeObjectURL(url);
+            }
+
+            uploadTransactions() {
+                const fileInput = document.getElementById('transactionFile');
+                const btn = document.getElementById('uploadTransactionBtn');
+                const file = fileInput.files[0];
+
+                if (!file) {
+                    this.showNotification('Please select a file to upload', 'error');
+                    return;
+                }
+
+                if (!file.name.toLowerCase().endsWith('.csv')) {
+                    this.showNotification('Only CSV files are supported right now', 'error');
+                    return;
+                }
+
+                btn.disabled = true;
+                btn.textContent = 'Uploading...';
+
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    try {
+                        const parsed = this.parseTransactionCSV(e.target.result);
+
+                        if (parsed.transactions.length === 0) {
+                            this.showNotification('No valid transactions found in file', 'error');
+                        } else {
+                            this.transactions = [...parsed.transactions, ...this.transactions];
+                            localStorage.setItem('transactions', JSON.stringify(this.transactions));
+                            this.loadUserData();
+
+                            let message = `${parsed.transactions.length} transaction(s) uploaded successfully! 💰`;
+                            if (parsed.errors.length > 0) {
+                                message += ` (${parsed.errors.length} row(s) skipped)`;
+                            }
+                            this.showNotification(message, 'success');
+                        }
+                    } catch (error) {
+                        console.error('CSV upload error:', error);
+                        this.showNotification('Failed to parse file. Please check the format.', 'error');
+                    } finally {
+                        fileInput.value = '';
+                        btn.disabled = false;
+                        btn.textContent = 'Upload Transactions';
+                    }
+                };
+                reader.onerror = () => {
+                    this.showNotification('Failed to read file', 'error');
+                    btn.disabled = false;
+                    btn.textContent = 'Upload Transactions';
+                };
+                reader.readAsText(file);
+            }
+
+            parseTransactionCSV(text) {
+                const lines = text.split(/\r?\n/).map(line => line.trim()).filter(line => line.length > 0);
+                const transactions = [];
+                const errors = [];
+
+                if (lines.length === 0) {
+                    return { transactions, errors };
+                }
+
+                const header = lines[0].split(',').map(h => h.trim().toLowerCase());
+                const requiredColumns = ['description', 'amount', 'type', 'category', 'date'];
+                const colIndex = {};
+                requiredColumns.forEach(col => {
+                    colIndex[col] = header.indexOf(col);
+                });
+
+                const hasAllColumns = requiredColumns.every(col => colIndex[col] !== -1);
+                if (!hasAllColumns) {
+                    throw new Error('Missing required columns: ' + requiredColumns.join(', '));
+                }
+
+                for (let i = 1; i < lines.length; i++) {
+                    const cells = lines[i].split(',').map(c => c.trim());
+
+                    const description = cells[colIndex.description];
+                    const amount = parseFloat(cells[colIndex.amount]);
+                    const type = (cells[colIndex.type] || '').toLowerCase();
+                    const category = cells[colIndex.category];
+                    const date = cells[colIndex.date];
+
+                    const isValid = description && !isNaN(amount) && amount > 0 &&
+                        ['income', 'expense'].includes(type) && category && date;
+
+                    if (!isValid) {
+                        errors.push({ line: i + 1, raw: lines[i] });
+                        continue;
+                    }
+
+                    transactions.push({
+                        id: Date.now() + i,
+                        description,
+                        amount,
+                        type,
+                        category,
+                        date,
+                        userId: this.user.id
+                    });
+                }
+
+                return { transactions, errors };
             }
 
             updateTransactionList() {
