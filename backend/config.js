@@ -38,5 +38,7 @@ module.exports = {
         chatMessageChars: 1000,
         transactionPageSize: 50,
         transactionPageSizeMax: 200,
+        csvMaxRows: 5000,
+        csvMaxBytes: 2 * 1024 * 1024,
     },
 };

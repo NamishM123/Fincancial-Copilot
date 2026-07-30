@@ -4,6 +4,8 @@ const config = require('../config');
 const { authenticateToken } = require('../middleware/auth');
 const { toCents } = require('../lib/money');
 const { dedupeHash } = require('../lib/dedupe');
+const { parseTransactionsCsv, guessCategory } = require('../lib/csv');
+const analytics = require('../lib/analytics');
 
 const router = express.Router();
 router.use(authenticateToken);
@@ -48,8 +50,8 @@ router.post('/', async (req, res, next) => {
     const userId = req.user.userId;
     const { description, amount, type, category, date } = req.body || {};
 
-    if (!description || amount === undefined || !type || !category || !date) {
-        return res.status(400).json({ error: 'Description, amount, type, category, and date are all required' });
+    if (!description || amount === undefined || !type || !date) {
+        return res.status(400).json({ error: 'Description, amount, type, and date are all required' });
     }
     if (!VALID_TYPES.includes(type)) {
         return res.status(400).json({ error: 'Type must be "income" or "expense"' });
@@ -64,7 +66,7 @@ router.post('/', async (req, res, next) => {
     }
 
     const desc = String(description).trim().slice(0, 200);
-    const cat = String(category).trim().slice(0, 60);
+    const cat = (category && String(category).trim().slice(0, 60)) || guessCategory(desc, type);
     const hash = dedupeHash({ date, description: desc, amountCents, type });
 
     try {
@@ -102,39 +104,98 @@ router.delete('/:id', async (req, res, next) => {
     }
 });
 
-router.get('/summary', async (req, res, next) => {
+/**
+ * CSV import.
+ *
+ * Takes raw text rather than multipart: the browser reads the file locally and
+ * posts its contents, which keeps the dependency list shorter and means the
+ * same endpoint is trivially testable.
+ */
+router.post('/import', async (req, res, next) => {
     const userId = req.user.userId;
+    const csvText = (req.body && req.body.csv) || '';
+
+    if (typeof csvText !== 'string' || csvText.trim() === '') {
+        return res.status(400).json({ error: 'No CSV content received' });
+    }
+    if (Buffer.byteLength(csvText, 'utf8') > config.limits.csvMaxBytes) {
+        return res.status(413).json({ error: 'File is too large (limit 2 MB)' });
+    }
+
+    const { transactions, errors, columns } = parseTransactionsCsv(csvText, {
+        maxRows: config.limits.csvMaxRows,
+    });
+
+    if (transactions.length === 0) {
+        return res.status(400).json({
+            error: errors[0] ? errors[0].message : 'No importable rows found',
+            errors: errors.slice(0, 20),
+            detectedColumns: columns,
+        });
+    }
 
     try {
-        const [totals, categories] = await Promise.all([
-            db.all(
-                `SELECT type, SUM(amount_cents) AS total_cents, COUNT(*) AS count
-                 FROM transactions WHERE user_id = ? GROUP BY type`,
-                [userId]
-            ),
-            db.all(
-                `SELECT category, SUM(amount_cents) AS amount_cents
-                 FROM transactions WHERE user_id = ? AND type = 'expense'
-                 GROUP BY category ORDER BY amount_cents DESC`,
-                [userId]
-            ),
-        ]);
+        await db.run('BEGIN');
+        let imported = 0;
 
-        const income = totals.find((r) => r.type === 'income');
-        const expense = totals.find((r) => r.type === 'expense');
-        const incomeCents = income ? income.total_cents : 0;
-        const expenseCents = expense ? expense.total_cents : 0;
+        for (const t of transactions) {
+            // INSERT OR IGNORE against the unique (user_id, dedupe_hash) index
+            // makes re-importing an overlapping statement a no-op.
+            const result = await db.run(
+                `INSERT OR IGNORE INTO transactions
+                    (user_id, description, amount_cents, type, category, date, dedupe_hash)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                [userId, t.description, t.amountCents, t.type, t.category, t.date, t.dedupeHash]
+            );
+            if (result.changes > 0) imported++;
+        }
+
+        await db.run('COMMIT');
 
         res.json({
-            summary: {
-                incomeCents,
-                expenseCents,
-                balanceCents: incomeCents - expenseCents,
-                transactionCount: totals.reduce((sum, r) => sum + r.count, 0),
-                savingsRate: incomeCents > 0 ? (incomeCents - expenseCents) / incomeCents : null,
-            },
-            byCategory: categories.map((c) => ({ category: c.category, amountCents: c.amount_cents })),
+            imported,
+            duplicatesSkipped: transactions.length - imported,
+            rowsFailed: errors.length,
+            errors: errors.slice(0, 20),
+            detectedColumns: columns,
         });
+    } catch (err) {
+        await db.run('ROLLBACK').catch(() => {});
+        next(err);
+    }
+});
+
+async function loadAll(userId) {
+    return db.all('SELECT * FROM transactions WHERE user_id = ? ORDER BY date DESC, id DESC', [userId]);
+}
+
+router.get('/summary', async (req, res, next) => {
+    try {
+        const rows = await loadAll(req.user.userId);
+        res.json({
+            summary: analytics.summarize(rows),
+            byCategory: analytics.byCategory(rows, 'expense'),
+            monthly: analytics.monthlySeries(rows).slice(-12),
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+router.get('/recurring', async (req, res, next) => {
+    try {
+        const rows = await loadAll(req.user.userId);
+        res.json({ recurring: analytics.detectRecurring(rows) });
+    } catch (err) {
+        next(err);
+    }
+});
+
+router.get('/forecast', async (req, res, next) => {
+    try {
+        const rows = await loadAll(req.user.userId);
+        const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 365);
+        res.json({ forecast: analytics.forecast(rows, { days }) });
     } catch (err) {
         next(err);
     }
