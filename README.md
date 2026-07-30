@@ -27,6 +27,10 @@ missing. Tool calls see everything.
 
 **Transactions**
 - Manual entry, or CSV import from a bank or card statement
+- Search by description, filter by category, type, date range, and amount range,
+  and sort by any of date, amount, description, or category
+- Full editing: change any field, with the duplicate-detection hash recomputed
+  so a later import of the same row is still recognised
 - Column names detected automatically across the spellings banks actually use
   (`Date` / `Transaction Date` / `Posting Date`, `Description` / `Merchant` / `Payee`,
   and either an `Amount` column or separate `Debit` / `Credit` columns)
@@ -36,6 +40,18 @@ missing. Tool calls see everything.
   duplicates are skipped rather than double-entered
 - Bad rows are reported individually with spreadsheet-aligned row numbers instead of
   failing the whole file
+
+**Categorisation**
+- Transactions are categorised automatically from the merchant description
+- A naive Bayes classifier over word tokens and character 5-grams, layered on
+  a rule table that acts as both baseline and fallback
+- Measured by 5-fold cross-validation with **merchant-disjoint folds**: 40.2%
+  (rules alone) to 59.3% (combined) across 12 categories on merchants the model
+  has never seen. See "Categoriser accuracy" below for what that number does
+  and does not claim
+- Corrections are recorded and folded back into the model at startup, weighted
+  above the built-in corpus because they are real labels for merchants the user
+  actually transacts with
 
 **Analytics**
 - Spending by category, income vs expenses by month, savings rate
@@ -95,7 +111,7 @@ cd backend
 npm test
 ```
 
-85 tests via `node:test` and `supertest`, running against in-memory SQLite.
+117 tests via `node:test` and `supertest`, running against in-memory SQLite.
 
 Coverage worth calling out:
 
@@ -108,6 +124,9 @@ Coverage worth calling out:
   qualify. A detector that fires on everything is worse than none
 - **CSV edge cases** — quoted commas, BOM, `2026-02-31` rejected rather than rolled into
   March, re-import as a no-op
+- **Query safety** — LIKE wildcards in a search term are escaped rather than interpreted,
+  and an unrecognised sort column falls back to a whitelisted default instead of reaching
+  SQL
 
 ### Assistant evals
 
@@ -163,10 +182,14 @@ All endpoints except the first four require an `Authorization: Bearer <token>` h
 | `POST` | `/api/login` | Obtain a token |
 | `POST` | `/api/demo` | Provision a seeded demo account |
 | `GET` | `/api/me` | Current user |
-| `GET` | `/api/transactions` | List, paginated (`limit`, `offset`) |
+| `GET` | `/api/transactions` | List, paginated and filterable (`limit`, `offset`, `search`, `category`, `type`, `start_date`, `end_date`, `min_amount`, `max_amount`, `sort`, `order`) |
 | `POST` | `/api/transactions` | Create |
+| `PUT` | `/api/transactions/:id` | Edit any field |
 | `DELETE` | `/api/transactions/:id` | Delete |
+| `GET` | `/api/transactions/categories` | Distinct categories present, for filter controls |
 | `POST` | `/api/transactions/import` | Import CSV text |
+| `PATCH` | `/api/transactions/:id/category` | Correct a category, recorded as training data |
+| `GET` | `/api/transactions/categorization-stats` | Observed correction rate for this user |
 | `GET` | `/api/transactions/summary` | Totals, categories, monthly series |
 | `GET` | `/api/transactions/recurring` | Detected subscriptions |
 | `GET` | `/api/transactions/forecast` | Balance projection (`days`) |
@@ -185,9 +208,38 @@ ceiling that is per-user rather than per-IP.
 **Login does not leak account existence.** The same error and comparable work happen
 whether or not the email is registered.
 
-**Category detection is a rule table**, not a model — a documented baseline in
-`lib/csv.js` that a classifier would have to beat. Calling it "ML categorisation" would
-be overstating it.
+### Categoriser accuracy
+
+The reported 59.3% comes from 5-fold cross-validation where **folds are split by
+merchant, not by row**. A row split would put `AMAZON MKTP #123` in training and
+`AMAZON MKTP #456` in test, and the resulting number would measure memorisation. Every
+merchant in a test fold is one the model has never seen in any form.
+
+| Strategy | Accuracy |
+|---|---|
+| Rule table (baseline) | 40.2% |
+| Naive Bayes alone | 50.9% |
+| Combined, confidence threshold 0.6 | **59.3%** |
+
+Three caveats, stated so the number is not over-read:
+
+1. **The training corpus is hand-authored merchant names, not real bank data.** This
+   measures generalisation across merchant *names*; it does not predict performance on
+   any particular person's statement. `GET /api/transactions/categorization-stats`
+   reports the observed correction rate per user, which is the number that actually
+   matters. Replacing the corpus with real labeled data is the highest-value improvement
+   available here.
+2. **There is a ceiling.** Pure brand names — `WEGMANS`, `AETNA`, `KOHLS` — carry no
+   compositional signal, so no model reaches them from the name alone. Names containing a
+   category word (`PIZZERIA NAPOLI`, `CITY WATER DEPT`) generalise; arbitrary brands do
+   not.
+3. **The confidence threshold was chosen a priori, not tuned.** A sweep found 0.8 scores
+   about a point higher, but selecting it on the same folds the score is reported from
+   would make the number optimistic. It was not adopted.
+
+Feature choice was decided by sweeping eleven configurations. Words alone score 42.3%;
+adding 3- and 4-grams *hurts*, because short grams fire across every category and drown
+the discriminative ones. Words plus 5-grams was the best.
 
 ## Deployment
 
@@ -204,7 +256,7 @@ way, since demo accounts are provisioned on demand.
 Stated plainly so the feature list above can be trusted:
 
 - No bank account linking. CSV import is the only bulk path in.
-- No learned transaction categorisation. The rule table is a baseline, not a model.
+- The categoriser is trained on hand-authored merchant names, not real statements.
 - No budget goals or alerts.
 - No multi-currency support. Amounts are treated as a single currency.
 - No password reset, email verification, or token refresh.
