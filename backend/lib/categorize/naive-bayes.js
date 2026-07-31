@@ -46,8 +46,8 @@ function normalize(description) {
  * seen: "PIZZERIA NAPOLI" shares grams with "PIZZA HUT" even though no word
  * token matches.
  *
- * The 3/4/5 combination was chosen by sweeping the cross-validation (see the
- * PR for the table). Words alone score 42.3% and memorise training merchants;
+ * The feature set was chosen by sweeping the cross-validation (see the PR for
+ * the table). Words alone score 42.3% and memorise training merchants;
  * adding 3- and 4-grams *hurts* -- short grams like " co" and "ent" fire across
  * every category and drown the discriminative ones. 5-grams alone with word
  * tokens was the best of eleven configurations at 50.9%.
