@@ -303,8 +303,8 @@ app.post('/api/transactions', authenticateToken, (req, res) => {
         return res.status(400).json({ error: 'All fields are required' });
     }
 
-    if (amount <= 0) {
-        return res.status(400).json({ error: 'Amount must be greater than 0' });
+    if (typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) {
+        return res.status(400).json({ error: 'Amount must be a number greater than 0' });
     }
 
     if (!['income', 'expense'].includes(type)) {
